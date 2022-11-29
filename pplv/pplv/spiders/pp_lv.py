@@ -1,59 +1,76 @@
 import scrapy
-from scrapy_splash import SplashRequest
-
-lua_script="""
-function main(splash, args)
-    splash.resource_timeout = 0
-    splash.private_mode_enabled = false
-    assert(splash:go(args.url))
-    assert(splash:wait(3))
-    return {
-        html = splash:html(),
-    }
-end
-"""
-
+from scrapy.exceptions import CloseSpider
+import json
 
 class CarsSpider(scrapy.Spider):
     name = "pp_lv"
+    start_urls = [f'https://apipub.pp.lv/lv/api_user/v1/categories/2/lots?orderColumn=publishDate&orderDirection=DESC&currentPage=1&itemsPerPage=20']
+    page_number = 1
+    car_names = []
     
-    def start_requests(self):
-        url = 'https://pp.lv/lv/transports-un-tehnika/vieglie-auto?page=1'
-        
-        yield SplashRequest(
-            url, 
-            callback=self.parse, 
-            endpoint='execute',
-            args={'wait': 3, 'lua_source': lua_script,  url :'https://pp.lv/lv/transports-un-tehnika/vieglie-auto?page=1'}
-            )
-        
     def parse(self, response):
-        for link in response.css('div.pp-list-view a::attr(href)'):
-            yield response.follow(link.get(), callback=self.parse_ads)
-    
-    def parse_ads(self, response):
-        yield {
-            'title': response.css('title::text').get()
-        }
-            
-            
-        # details = response.css('div.single-pp-data.row')
-        # for detail in details:
-        #     yield{
-        #         'year': detail.css('div.single-pp-data-value col-6 col-sm-7::text').get()
-        #     }
+        raw_data = response.body
+        data = json.loads(raw_data)
         
-
-
-
-# ---Data from main ads page---
-# def parse(self, response):
-#   cars = response.css('div.list-content')
-#   for car in cars:
-#       info = car.css('div.filter-list')
-#       for item in info:
-#           yield{
-#               'name': car.css('strong.d-none.d-md-block::text').get(),
-#               'link': car.css('div::text').get(),
-#               }
-    
+        # loading scraped existing car names from file
+        with open('scraped_names.txt', 'r', encoding='utf-8') as f:
+            for line in f:
+                x = line[:-1]
+                self.car_names.append(x)
+            
+        
+        # check if cars data are in response
+        if data['content']['data'] == []:
+            raise CloseSpider('No more cars in response')
+        
+        # loop through every car
+        for car in data['content']['data']:
+            year = ''
+            mileage = ''
+            vin = ''
+            plate = ''
+            
+            # loop through car details and assign if exists
+            for detail in car['adFilterValues']:
+                if detail['filter']['name'] == 'Izlaiduma gads':
+                    year = detail['value']['displayValue']
+                if detail['filter']['name'] == 'Nobraukums, km':
+                    mileage = detail['textValue']
+                if detail['filter']['name'] == 'VIN kods':
+                    vin = detail['textValue']
+                if detail['filter']['name'] == 'Auto numurs':
+                    plate = detail['textValue']    
+            
+            # check bad car make names, add car
+            if car['category']['parent']['name'] == 'Vieglie auto':
+                yield{
+                'Make': car['category']['name'],
+                'Model': car['category']['name'],
+                'Year': year,
+                'Mileage':mileage,
+                'VIN': vin,
+                'Plate': plate,
+                }
+            if car['category']['parent']['name'] != 'Vieglie auto' and car['category']['parent']['name'] not in self.car_names: 
+                yield{
+                'Make': car['category']['parent']['parent']['name'],
+                'Model': car['category']['name'],
+                'Year': year,
+                'Mileage':mileage,
+                'VIN': vin,
+                'Plate': plate,
+                }
+            else:
+                yield{
+                'Make': car['category']['parent']['name'],
+                'Model': car['category']['name'],
+                'Year': year,
+                'Mileage':mileage,
+                'VIN': vin,
+                'Plate': plate,
+                }
+        
+        # go to next page
+        self.page_number += 1
+        next_page = f'https://apipub.pp.lv/lv/api_user/v1/categories/2/lots?orderColumn=publishDate&orderDirection=DESC&currentPage={self.page_number}&itemsPerPage=20'
+        yield response.follow(next_page, callback=self.parse)
